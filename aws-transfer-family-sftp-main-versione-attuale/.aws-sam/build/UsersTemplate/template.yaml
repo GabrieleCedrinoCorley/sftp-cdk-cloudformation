@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Provides the base configuration for a SFTP Server user and its respective
+  role and policy. It builds a s3 bucket with encryption, LC policy and Event Notification.
+  It also creates a SNS Topic as destination for the EventNotification.
+Resources:
+  SnsTopicSFTP:
+    Type: AWS::SNS::Topic
+    DeletionPolicy: Retain
+    Properties:
+      TopicName: ego-dev-sftp-sns-topic
+      KmsMasterKeyId: 86cc2c29-b411-4414-944d-3c7d0a38864b
+  SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    DeletionPolicy: Retain
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: S3-Sftp-Policy
+        Statement:
+        - Sid: SNS topic allow s3 policy
+          Effect: Allow
+          Principal:
+            Service: s3.amazonaws.com
+          Action: SNS:Publish
+          Resource:
+            Ref: SnsTopicSFTP
+          Condition:
+            Bool:
+              aws:SecureTransport: true
+      Topics:
+      - Ref: SnsTopicSFTP
+  SftpS3Bucket:
+    DependsOn: SnsTopicPolicy
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName:
+        Fn::Sub: ego-sftp-${AWS::AccountId}-${AWS::Region}-q7a2p4c5lf0hc3fv
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            KMSMasterKeyID: arn:aws:kms:eu-west-1:151425774723:key/94348371-80a6-4d96-bb90-54b8dd60cc30
+            SSEAlgorithm: aws:kms
+          BucketKeyEnabled: true
+      NotificationConfiguration:
+        TopicConfigurations:
+        - Event: s3:ObjectCreated:Put
+          Topic:
+            Ref: SnsTopicSFTP
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LoggingConfiguration:
+        DestinationBucketName: ego-resource-logs-151425774723-eu-west-1
+        LogFilePrefix:
+          Fn::Sub: S3/ego-sftp-${AWS::AccountId}-${AWS::Region}-q7a2p4c5lf0hc3fv
+      VersioningConfiguration:
+        Status: Suspended
+  SftpS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    Properties:
+      Bucket:
+        Ref: SftpS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Deny
+          Principal: '*'
+          Action: S3*
+          Resource:
+            Fn::Sub: ${SftpS3Bucket.Arn}/*
+          Condition:
+            NumericLessThan:
+              s3:TlsVersion: '1.2'
+        - Effect: Deny
+          Principal: '*'
+          Action: s3:*
+          Resource:
+            Fn::Sub: ${SftpS3Bucket.Arn}/*
+          Condition:
+            Bool:
+              aws:SecureTransport: 'false'
+  TrUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EgoDevSftpUsersRole
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - transfer.amazonaws.com
+          Action:
+          - sts:AssumeRole
+  TrUserPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:ListBucket
+          - s3:GetBucketLocation
+          - s3:PutObject
+          - s3:GetObject
+          - s3:DeleteObjectVersion
+          - s3:DeleteObject
+          - s3:GetObjectVersion
+          Resource:
+          - Fn::GetAtt:
+            - SftpS3Bucket
+            - Arn
+          - Fn::Sub: ${SftpS3Bucket.Arn}/*
+      Roles:
+      - Ref: TrUserRole
+  TrUser1:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: SFTP/user1
+      Description: This secret represent an user for SFTPServer. Keep SFTP/User format
+      GenerateSecretString:
+        GenerateStringKey: Password
+        PasswordLength: 30
+        ExcludeCharacters: '"@/\;#`,!?[]^'
+        SecretStringTemplate:
+          Fn::Sub:
+          - '{"Role": "${TransferUserRole}","HomeDirectoryDetails": "[{\"Entry\":
+            \"/\", \"Target\": \"/${TransferBucketName}/${!Transfer:UserName}\"}]"}'
+          - TransferUserRole:
+              Fn::GetAtt:
+              - TrUserRole
+              - Arn
+            TransferBucketName:
+              Ref: SftpS3Bucket
+Outputs:
+  UserRole:
+    Value:
+      Fn::GetAtt:
+      - TrUserRole
+      - Arn
+  BucketName:
+    Value:
+      Ref: SftpS3Bucket
+  SnsTopicSftpArn:
+    Value:
+      Ref: SnsTopicSFTP

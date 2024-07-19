@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Provides a template for creating an AWS Transfer for SFTP service. The
+  service use a lambda function for authentication endpoint as IdP.
+Parameters:
+  SubnetA:
+    Description: The ID of the first public subnet where the transfer servers will
+      be deployed in the Production VPC.
+    Type: AWS::EC2::Subnet::Id
+  SubnetB:
+    Description: The ID of the second public subnet where the transfer servers will
+      be deployed in the Production VPC.
+    Type: AWS::EC2::Subnet::Id
+  VPC:
+    Description: ID of the Production VPC where the SFTPServer will be deployed.
+    Type: AWS::EC2::VPC::Id
+Resources:
+  EIPTran01:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  EIPTran02:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  ServerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: transferfamily-sftp-logs
+      KmsKeyId: arn:aws:kms:eu-west-1:151425774723:key/a9c04dea-911c-4763-a361-e99cfee45268
+      RetentionInDays: 30
+  TransferServer:
+    Type: AWS::Transfer::Server
+    Properties:
+      EndpointDetails:
+        AddressAllocationIds:
+        - Fn::GetAtt:
+          - EIPTran01
+          - AllocationId
+        - Fn::GetAtt:
+          - EIPTran02
+          - AllocationId
+        SubnetIds:
+        - Ref: SubnetA
+        - Ref: SubnetB
+        SecurityGroupIds:
+        - Ref: TrSecurityGroup
+        VpcId:
+          Ref: VPC
+      EndpointType: VPC
+      IdentityProviderDetails:
+        Function:
+          Fn::GetAtt:
+          - GetUserConfigLambda
+          - Arn
+        SftpAuthenticationMethods: PASSWORD
+      IdentityProviderType: AWS_LAMBDA
+      LoggingRole:
+        Fn::GetAtt: TransferServerRole.Arn
+      StructuredLogDestinations:
+      - Fn::GetAtt:
+        - ServerLogGroup
+        - Arn
+      Tags:
+      - Key: Name
+        Value: SFTPServer
+      - Key: transfer:customHostname
+        Value: sftp.dev.ego.energy
+  TransferServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: sftp-server-role
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - transfer.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: cw-logGroup-write
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource:
+              Fn::Sub: ${ServerLogGroup.Arn}:*
+  TrSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Internet connection to SFTPServer
+      GroupName: ego-sftp-sg
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: '0.0.0.0/0'
+      SecurityGroupEgress:
+      - CidrIp: '0.0.0.0/0'
+        IpProtocol: '-1'
+      Tags:
+      - Key: Name
+        Value: ego-sftp-sg
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: sftp-server-auth-lambda-logs
+      KmsKeyId: arn:aws:kms:eu-west-1:151425774723:key/a9c04dea-911c-4763-a361-e99cfee45268
+      RetentionInDays: 30
+  GetUserConfigLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      KmsKeyArn: arn:aws:kms:eu-west-1:151425774723:key/f9f5cfbb-2ff1-4a2e-be43-b9d304e0b535
+      LoggingConfig:
+        LogGroup:
+          Ref: LambdaLogGroup
+      Code:
+        ZipFile:
+          Fn::Sub: "import os\nimport json\nimport boto3\nimport base64\nfrom botocore.exceptions\
+            \ import ClientError\n\ndef lambda_handler(event, context):\n    resp_data\
+            \ = {}\n    print(event)\n\n    if 'username' not in event or 'serverId'\
+            \ not in event:\n        print(\"Incoming username or serverId missing\
+            \  - Unexpected\")\n        return response_data\n\n    # It is recommended\
+            \ to verify server ID against some value, this template does not verify\
+            \ server ID\n    input_username = event['username']\n    print(\"Username:\
+            \ {}, ServerId: {}\".format(input_username, event['serverId']));\n\n \
+            \   if 'password' in event:\n        input_password = event['password']\n\
+            \    else:\n        print(\"No password, checking for SSH public key\"\
+            )\n        input_password = ''\n\n    # Lookup user's secret which can\
+            \ contain the password or SSH public keys\n    resp = get_secret(\"SFTP/\"\
+            \ + input_username)\n\n    if resp != None:\n        resp_dict = json.loads(resp)\n\
+            \    else:\n        print(\"Secrets Manager exception thrown\")\n    \
+            \    return {}\n\n    if input_password != '':\n        if 'Password'\
+            \ in resp_dict:\n            resp_password = resp_dict['Password']\n \
+            \       else:\n            print(\"Unable to authenticate user - No field\
+            \ match in Secret for password\")\n            return {}\n\n        if\
+            \ resp_password != input_password:\n            print(\"Unable to authenticate\
+            \ user - Incoming password does not match stored\")\n            return\
+            \ {}\n    else:\n        # SSH Public Key Auth Flow - The incoming password\
+            \ was empty so we are trying ssh auth and need to return the public key\
+            \ data if we have it\n        if 'PublicKey' in resp_dict:\n         \
+            \   resp_data['PublicKeys'] = [resp_dict['PublicKey']]\n        else:\n\
+            \            print(\"Unable to authenticate user - No public keys found\"\
+            )\n            return {}\n\n    # If we've got this far then we've either\
+            \ authenticated the user by password or we're using SSH public key auth\
+            \ and\n    # we've begun constructing the data response. Check for each\
+            \ key value pair.\n    # These are required so set to empty string if\
+            \ missing\n    if 'Role' in resp_dict:\n        resp_data['Role'] = resp_dict['Role']\n\
+            \    else:\n        print(\"No field match for role - Set empty string\
+            \ in response\")\n        resp_data['Role'] = ''\n\n    # These are optional\
+            \ so ignore if not present\n    if 'Policy' in resp_dict:\n        resp_data['Policy']\
+            \ = resp_dict['Policy']\n\n    if 'HomeDirectoryDetails' in resp_dict:\n\
+            \        print(\"HomeDirectoryDetails found - Applying setting for virtual\
+            \ folders\")\n        resp_data['HomeDirectoryDetails'] = resp_dict['HomeDirectoryDetails']\n\
+            \        resp_data['HomeDirectoryType'] = \"LOGICAL\"\n    elif 'HomeDirectory'\
+            \ in resp_dict:\n        print(\"HomeDirectory found - Cannot be used\
+            \ with HomeDirectoryDetails\")\n        resp_data['HomeDirectory'] = resp_dict['HomeDirectory']\n\
+            \    else:\n        print(\"HomeDirectory not found - Defaulting to /\"\
+            )\n\n    print(\"Completed Response Data: \"+json.dumps(resp_data))\n\
+            \    return resp_data\n\ndef get_secret(id):\n    region = os.environ['SecretsManagerRegion']\n\
+            \    print(\"Secrets Manager Region: \"+region)\n\n    client = boto3.session.Session().client(service_name='secretsmanager',\
+            \ region_name=region)\n\n    try:\n        resp = client.get_secret_value(SecretId=id)\n\
+            \        # Decrypts secret using the associated KMS CMK.\n        # Depending\
+            \ on whether the secret is a string or binary, one of these fields will\
+            \ be populated.\n        if 'SecretString' in resp:\n            print(\"\
+            Found Secret String\")\n            return resp['SecretString']\n    \
+            \    else:\n            print(\"Found Binary Secret\")\n            return\
+            \ base64.b64decode(resp['SecretBinary'])\n    except ClientError as err:\n\
+            \        print('Error Talking to SecretsManager: ' + err.response['Error']['Code']\
+            \ + ', Message: ' + str(err))\n        return None\n"
+      Description: A function to lookup and return user data from AWS Secrets Manager.
+      Handler: index.lambda_handler
+      Role:
+        Fn::GetAtt: LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Environment:
+        Variables:
+          SecretsManagerRegion:
+            Ref: AWS::Region
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: LambdaSecretsPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource:
+              Fn::Sub: arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:SFTP/*
+  GetUserConfigLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::GetAtt: GetUserConfigLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: transfer.amazonaws.com
+Outputs:
+  ServerId:
+    Value:
+      Fn::GetAtt: TransferServer.ServerId
+  ServerEndpoint:
+    Value:
+      Fn::Join:
+      - ''
+      - - Fn::GetAtt: TransferServer.ServerId
+        - .server.transfer.
+        - Ref: AWS::Region
+        - .amazonaws.com

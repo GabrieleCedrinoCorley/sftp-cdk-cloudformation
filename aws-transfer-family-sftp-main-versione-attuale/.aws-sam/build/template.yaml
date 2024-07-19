@@ -1,0 +1,47 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Provides nesting for required stacks to deploy a reference SFTP architecure.
+Metadata:
+  Stack:
+    Value: 0
+  VersionDate:
+    Value: 20240426
+  Identifier:
+    Value: main
+  Input:
+    Description: Input of all required parameters in nested stacks
+  Output:
+    Description: N/A
+Parameters:
+  SubnetA:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-076b27eb1c844706a
+  SubnetB:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-0d31610393ee62114
+  VPC:
+    Description: The tenancy attribute for the instances launched into the VPC. If
+      unsure, leave as default.
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-0d93bb2f49c835b38
+Resources:
+  TransferTemplate:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: TransferTemplate/template.yaml
+      TimeoutInMinutes: 20
+      Parameters:
+        VPC:
+          Ref: VPC
+        SubnetA:
+          Ref: SubnetA
+        SubnetB:
+          Ref: SubnetB
+    Metadata:
+      SamResourceId: TransferTemplate
+  UsersTemplate:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: UsersTemplate/template.yaml
+      TimeoutInMinutes: 20
+    Metadata:
+      SamResourceId: UsersTemplate

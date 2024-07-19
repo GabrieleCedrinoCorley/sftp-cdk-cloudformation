@@ -1,0 +1,59 @@
+version: 1.2
+
+GLOBAL_PARAMS: &GLOBAL_PARAMS
+  capabilities: CAPABILITY_IAM CAPABILITY_AUTO_EXPAND CAPABILITY_NAMED_IAM
+  confirm_changeset: true
+  profile: ego-dev-etrm
+  region: eu-west-1
+  resolve_s3: true
+  stack_name: ego-dev-sftp
+  template_file: template.yaml
+  config_file: samconfig.yaml
+  on_failure: DELETE
+
+Local:
+  deploy:
+    parameters:
+      <<: *GLOBAL_PARAMS
+      parameter_overrides:
+        - SubnetA=subnet-076b27eb1c844706a
+        - SubnetB=subnet-0d31610393ee62114
+        - SubnetC=subnet-0945b5b21df70212e
+        - VPC=vpc-0d93bb2f49c835b38
+      tags:
+      - Project=EGO-SFTP
+      - Environment=ETRM
+
+ETRM:
+  deploy:
+    parameters:
+      <<: *GLOBAL_PARAMS
+      region: eu-central-1
+      parameter_overrides:
+      - AlbSSLCertId=37849590-0281-41e7-80eb-ae41bf1b19ec
+      - AllocatedStorageMySql=60
+      - AmiBastionHost=ami-07eebe846a71639d2      #Da cambiare AMI from AWS Backup
+      - AmiMacchinadiTest=ami-07eebe846a71639d2   #Da cambiare AMI from AWS Backup
+      - DBEngineType=sqlserver-se
+      - DBNameMySql=mysqlDB
+      - DBInstanceClass=db.m5.large
+      - DBSnapshotIdentifier=arn:aws:rds:eu-central-1:411424212414:snapshot:awsbackup:copyjob-6651537d-4234-e2b4-fe7e-dffc6bb4bfc4
+      - DBMysqlSnapshotIdentifier=""              #Aggiungere Snapshot from AWS Backup
+      - Environment=dr
+      - Hostname=agmlive.it
+      - InstanceTypeEc2=t3.large
+      - KeyName=cpu-ec2-agmlive-dr
+      - LatestAmiId=ami-07eebe846a71639d2         #Da cambiare AMI from AWS Backup
+      - MainInstanceClassMySQL=db.t3.medium
+      - MonthlyBackupDeleteAfterDays=32
+      - ProjectName=ComputerShare
+      - SsmPortForwardingUser=SsmPortForwardingUserDR
+      - SqlServerAllocatedStorage=20
+      - SqlServerMasterUser=admin
+      - TagDefaultWeeklyKey='Weekly_Backup' 
+      - TagDefaultMonthlyKey='Monthly_Backup'
+      - TagValue='YES'
+      - WeeklyBackupDeleteAfterDays=8
+      tags:
+      - Project=ComputerShare
+      - Environment=DisasterRecovery
